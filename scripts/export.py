@@ -42,11 +42,7 @@ def load_model(ckpt_path: str, variant: str, global_mode: str, device: str,
     ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=True)
     sd = ckpt.get('model_state_dict', ckpt)
     sd = strip_state_dict_prefixes(sd)
-    missing, unexpected = model.load_state_dict(sd, strict=False)
-    if unexpected:
-        print(f"  Ignored training-only keys: {unexpected}")
-    if missing:
-        print(f"  Warning — missing keys: {missing}")
+    model.load_state_dict(sd, strict=True)
     model = model.to(device).eval()
     model.fuse_for_inference()
     fuse_remaining_conv_bn(model)
@@ -59,48 +55,23 @@ def load_model(ckpt_path: str, variant: str, global_mode: str, device: str,
 
 def export_onnx(model: nn.Module, input_shape: tuple, output_path: str, opset: int = 17):
     """Export to ONNX with static shapes."""
-    import torch.nn.functional as F
-
-    import types
-    H, W = input_shape[2], input_shape[3]
-    s16 = (H // 16, W // 16)
-
-    for m in model.modules():
-        if type(m).__name__ == 'GlobalContextBlock':
-            def _fwd(self_m, x, _h=s16[0], _w=s16[1]):
-                ctx = F.avg_pool2d(x, kernel_size=(_h, _w))
-                return x + self_m.transform(ctx)
-            m.forward = types.MethodType(_fwd, m)
-
-        elif type(m).__name__ == 'StripPoolingAttention':
-            def _fwd(self_m, x):
-                B, C, H, W = x.shape
-                gate = self_m.gate_conv(
-                    F.adaptive_avg_pool2d(x, (H, 1)) +
-                    F.adaptive_avg_pool2d(x, (1, W))
-                )
-                return x * gate
-            m.forward = types.MethodType(_fwd, m)
-
-    cs = model.encoder.cross_scale
-    def _cs_fwd(self_cs, x_high, x_low, _s=s16):
-        lo = F.interpolate(self_cs.low_to_high(x_low), size=_s, mode='nearest')
-        hi = F.avg_pool2d(self_cs.high_to_low(x_high), 2, 2)
-        return x_high + lo * 0.3, x_low + hi * 0.3
-    cs.forward = types.MethodType(_cs_fwd, cs)
+    # Export the actual network. In particular, learned softmax attention in
+    # GlobalContextBlock must not be replaced with unweighted average pooling.
 
     dummy = torch.randn(*input_shape)
     with torch.no_grad():
         out = model(dummy)
     print(f"  Pre-export sanity check: output shape {out.shape}")
 
-    raw_path = output_path.replace('.onnx', '_raw.onnx')
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    raw_path = str(Path(output_path).with_name(Path(output_path).stem + '_raw.onnx'))
     with torch.no_grad():
         torch.onnx.export(
             model, dummy, raw_path,
             input_names=['image'], output_names=['depth'],
             opset_version=opset,
             do_constant_folding=True,
+            dynamo=False,
         )
     print(f"  Raw ONNX: {Path(raw_path).stat().st_size / 1e6:.1f} MB")
 
@@ -116,7 +87,7 @@ def export_onnx(model: nn.Module, input_shape: tuple, output_path: str, opset: i
     except ImportError:
         pass
 
-    Path(raw_path).rename(output_path)
+    Path(raw_path).replace(output_path)
     print(f"  ONNX saved (install onnxsim for a smaller file)")
 
 
@@ -160,6 +131,8 @@ def main():
                         help='Use NPU-compatible upsampling (required for zipdepth_base_npu.pth). '
                              'Replaces torch.nn.Unfold with an NPU-friendly equivalent.')
     args = parser.parse_args()
+    if args.height <= 0 or args.width <= 0 or args.height % 32 or args.width % 32:
+        parser.error('height and width must be positive multiples of 32')
 
     fmt = args.format
     ext = '.onnx' if fmt == 'onnx' else '.pt'

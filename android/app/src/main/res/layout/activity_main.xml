@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:background="#101827" android:padding="12dp">
+    <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ZipDepth · 实时相对深度" android:textColor="#FFFFFF" android:textSize="22sp" android:textStyle="bold" />
+    <TextView android:id="@+id/modelInfo" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="模型载入中" android:textColor="#B6CADC" android:textSize="12sp" />
+    <FrameLayout android:id="@+id/cameraFrame" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="8dp">
+        <androidx.camera.view.PreviewView android:id="@+id/preview" android:layout_width="match_parent" android:layout_height="match_parent" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="#99000000" android:padding="6dp" android:text="RGB 摄像头" android:textColor="#FFFFFF" />
+    </FrameLayout>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="6dp">
+        <ImageView android:id="@+id/depth" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitCenter" android:background="#060B12" android:contentDescription="实时相对逆深度图" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="#99000000" android:padding="6dp" android:text="相对逆深度 · 红近 蓝远" android:textColor="#FFFFFF" />
+    </FrameLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+        <Spinner android:id="@+id/resolution" android:layout_width="100dp" android:layout_height="48dp" android:backgroundTint="#35CDB2" />
+        <androidx.appcompat.widget.SwitchCompat android:id="@+id/smoothing" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:checked="true" android:text="时序平滑" android:textColor="#FFFFFF" />
+        <Button android:id="@+id/retry" android:layout_width="wrap_content" android:layout_height="48dp" android:text="重试" />
+    </LinearLayout>
+    <TextView android:id="@+id/stats" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="等待摄像头" android:textColor="#35CDB2" android:textSize="13sp" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+        <Button android:id="@+id/benchmark" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="测试 5 分钟" />
+        <Button android:id="@+id/share" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:text="导出测量" />
+    </LinearLayout>
+</LinearLayout>

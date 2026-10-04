@@ -1,0 +1,5 @@
+# Install with ML1. Do not install the original training requirements wholesale.
+# torch==2.6.0+cu124 is already verified; no torch upgrade is requested.
+onnx==1.17.0
+onnxruntime==1.20.1
+huggingface-hub>=0.30,<2

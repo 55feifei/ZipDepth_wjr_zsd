@@ -25,6 +25,8 @@ checkpoints/**
 
 # Outputs
 output/
+data/
+outputs/
 eval_results/
 *_depth.mp4
 *_depth_frames/
