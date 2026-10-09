@@ -10,6 +10,8 @@ class DepthColorizer(context: Context, private val size: Int) {
     private var low: Double? = null
     private var high: Double? = null
     private val pixels = IntArray(size * size)
+    private var sortScratch = FloatArray(0)
+    private val spare = ArrayDeque<Bitmap>()
     private val lut = context.assets.open("turbo_lut.json").bufferedReader().use { reader ->
         val values = JSONArray(reader.readText())
         require(values.length() == 256)
@@ -21,15 +23,38 @@ class DepthColorizer(context: Context, private val size: Int) {
 
     fun reset() { low = null; high = null }
 
+    fun accepts(pixelCount: Int) = pixelCount == size * size
+
+    fun clear() {
+        reset()
+        while (spare.isNotEmpty()) spare.removeFirst().let { if (!it.isRecycled) it.recycle() }
+    }
+
+    /** Returned bitmaps stay checked out until [release]. The pool is only touched on the post thread. */
     fun render(depth: FloatArray, sceneReset: Boolean): Bitmap {
-        val sorted = depth.copyOf().apply { sort() }
-        val newLow = TemporalSmoother.percentile(sorted, .02)
-        val newHigh = TemporalSmoother.percentile(sorted, .98)
+        if (sortScratch.size != depth.size) sortScratch = FloatArray(depth.size)
+        System.arraycopy(depth, 0, sortScratch, 0, depth.size)
+        sortScratch.sort()
+        val newLow = TemporalSmoother.percentile(sortScratch, .02)
+        val newHigh = TemporalSmoother.percentile(sortScratch, .98)
         if (sceneReset || low == null) { low = newLow; high = newHigh }
         else { low = .95 * low!! + .05 * newLow; high = .95 * high!! + .05 * newHigh }
         val span = max(high!! - low!!, 1e-6)
-        depth.indices.forEach { i -> pixels[i] = lut[((depth[i] - low!!) / span * 255).toInt().coerceIn(0, 255)] }
-        return Bitmap.createBitmap(pixels, size, size, Bitmap.Config.ARGB_8888)
+        val limit = low!!
+        var i = 0
+        while (i < depth.size) {
+            pixels[i] = lut[((depth[i] - limit) / span * 255).toInt().coerceIn(0, 255)]
+            i++
+        }
+        val bitmap = spare.removeFirstOrNull() ?: Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        bitmap.setPixels(pixels, 0, size, 0, 0, size, size)
+        return bitmap
+    }
+
+    fun release(bitmap: Bitmap) {
+        if (bitmap.isRecycled || spare.contains(bitmap)) return
+        if (bitmap.width != size || bitmap.height != size || spare.size >= 4) bitmap.recycle()
+        else spare.addFirst(bitmap)
     }
 
 }

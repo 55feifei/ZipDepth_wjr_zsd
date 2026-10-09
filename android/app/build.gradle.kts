@@ -25,7 +25,13 @@ fun metadataField(file: File, name: String): String {
     return match.groupValues[1].lowercase()
 }
 
-val modelPrefix = providers.gradleProperty("modelPrefix").orElse("zipdepth_baseline")
+val modelPrefix = providers.gradleProperty("modelPrefix").orElse("zipdepth_selected")
+
+fun modelDirectory(prefix: String): File = if (prefix == "zipdepth_selected") {
+    rootProject.file("../output/experiments_5600/models")
+} else {
+    rootProject.file("../output/models")
+}
 val generatedModelAssets = layout.buildDirectory.dir("generated/modelAssets")
 val debugKeystore = rootProject.file("../output/tools/android/debug.keystore")
 val ensureDebugKeystore by tasks.registering(Exec::class) {
@@ -40,7 +46,7 @@ val ensureDebugKeystore by tasks.registering(Exec::class) {
     )
 }
 val copyModels by tasks.registering {
-    val sourceModels = listOf(256, 384).associateWith { rootProject.file("../output/models/${modelPrefix.get()}_${it}.onnx") }
+    val sourceModels = listOf(256, 384).associateWith { File(modelDirectory(modelPrefix.get()), "${modelPrefix.get()}_${it}.onnx") }
     val metadataFiles = sourceModels.values.map { File(it.parentFile, "${it.nameWithoutExtension}.json") }
     inputs.files(sourceModels.values)
     inputs.files(metadataFiles)

@@ -13,25 +13,27 @@
 ```powershell
 Set-Location -LiteralPath 'F:\鲜可机器智能课设\ZipDepth'
 powershell -ExecutionPolicy Bypass -File .\android\setup-build.ps1
-powershell -ExecutionPolicy Bypass -File .\android\build.ps1 -Model final
+powershell -ExecutionPolicy Bypass -File .\android\build.ps1 -Model selected
 ```
 
 `setup-build.ps1` 只在 JDK、Gradle 或 SDK 组件缺失时需要执行。当前机器已经具备 JDK 17、Gradle 8.9、compileSdk 35 和 Build Tools 35.0.0 时，直接构建即可。依赖缓存齐全后可加 `-Offline`。
 
-`-Model final` 使 `MODEL_FLAVOR` 为 `zipdepth_final`，并打包：
+默认 `-Model selected` 使 `MODEL_FLAVOR` 为 `zipdepth_selected`，并打包实验 5600 选出的同一 checkpoint：
 
 | 源文件 | APK 内资产 |
 |---|---|
-| `output/models/zipdepth_final_384.onnx` | `assets/zipdepth_384.onnx` |
-| `output/models/zipdepth_final_256.onnx` | `assets/zipdepth_256.onnx` |
+| `output/experiments_5600/models/zipdepth_selected_384.onnx` | `assets/zipdepth_384.onnx` |
+| `output/experiments_5600/models/zipdepth_selected_256.onnx` | `assets/zipdepth_256.onnx` |
 | `tests/fixtures/turbo_lut.json` | `assets/turbo_lut.json` |
+
+`-Model final` 与 `-Model baseline` 仍从 `output/models/zipdepth_<model>_{384,256}.onnx` 打包。
 
 构建前会核对两个 ONNX 与各自 JSON 里的 `onnx_sha256`，并确认它们来自同一个 checkpoint。文件缺失、哈希不一致或 APK 里的模型字节与源文件不同时，构建失败。ONNX 以不压缩方式打进 APK。成功后的产物：
 
 ```text
-output/apk/zipdepth-final-debug.apk
-output/apk/build_evidence_final.json
-output/apk/apk_asset_check_final.json
+output/apk/zipdepth-selected-debug.apk
+output/apk/build_evidence_selected.json
+output/apk/apk_asset_check_selected.json
 ```
 
 课程演示使用 debug APK，便于之后用 `run-as` 读取应用内部测量文件。
@@ -56,19 +58,19 @@ Android Studio 不是必需的。若要导入，打开本仓库的 `android` 文
 ```powershell
 & 'F:\ANACONDA\envs\ML1\python.exe' -B .\scripts\verify_android.py `
   --install `
-  --apk .\output\apk\zipdepth-final-debug.apk
+  --apk .\output\apk\zipdepth-selected-debug.apk
 ```
 
 也可以把 APK 拷到手机后从文件管理器安装。签名冲突时，卸载会清掉应用内测量数据；先按下面的方式导出或 `adb pull` 再卸载。
 
-4. 打开「ZipDepth 实时深度」，授予摄像头权限。界面应显示 `zipdepth_final`、当前边长、后端和模型 SHA256 前缀。
+4. 打开「ZipDepth 实时深度」，授予摄像头权限。界面应显示 `zipdepth_selected`、当前边长、后端和模型 SHA256 前缀。
 
 ## 界面与输出含义
 
 - RGB 预览和深度图使用同一块中心正方形视野。预处理是校正方向、中心裁剪、双线性缩放，再变成 RGB `[0,1]` 的 CHW 输入。ImageNet mean/std 已在模型内部，调用端不再标准化。
 - 深度图是相对逆深度响应。高值较近，显示为红色；低值较远，显示为蓝色。
 - 深度更新 FPS 统计的是深度图实际显示次数，不是摄像头预览帧率。
-- 处理至显示延迟从 CameraX 分析回调进入开始，到 `ImageView.setImageBitmap` 为止，不含传感器曝光和屏幕扫描。
+- 处理至显示延迟从 CameraX 分析回调进入开始，到 `ImageView.setImageBitmap` 为止，不含传感器曝光和屏幕扫描。预处理、推理、后处理三段时间可以重叠；界面上的三段毫秒数是各自耗时。`ui_queue_ms` 是总延迟减去这三段后的剩余，包含阶段之间的等待。
 - 时序平滑默认开启。关闭后只做当帧着色。切换尺寸、平滑开关或回到前台都会清空平滑历史。
 - 模型行里的后端来自实际会话。XNNPACK 是 CPU 加速执行提供程序，不是手机 NPU。初始化或推理失败时会重建 CPU 会话，并在测量结果里保留回退原因和最终后端。
 - 电池温度只用于观察趋势，不是芯片温度。
@@ -131,7 +133,7 @@ output/device/demo.mp4
 
 ## 故障排查
 
-- 模型载入失败：确认安装的是 `zipdepth-final-debug.apk`，而不是缺少 ONNX 的中间包。构建日志里的哈希必须和 `output/models/zipdepth_final_*.json` 一致。
+- 模型载入失败：确认安装的是 `zipdepth-selected-debug.apk`，而不是缺少 ONNX 的中间包。构建日志里的哈希必须和 `output/experiments_5600/models/zipdepth_selected_*.json` 一致。
 - 摄像头权限被拒绝：点「重试」。若系统不再弹出权限框，重试会打开应用设置，授权后返回应用再点重试。
 - 有预览但没有深度：看模型行是否仍停在“载入”。推理失败时统计行会给出原因，点「重试」重建会话。
 - 深度图方向不对：预览和深度共用 1:1 视口；旋转后应重新对齐。若仍不对，不要用截图代替实机旋转检查。
@@ -141,6 +143,6 @@ output/device/demo.mp4
 
 ## 实现与验证
 
-摄像头使用 CameraX 最新帧策略和单个后台线程。每个 `ImageProxy` 都在 `finally` 中关闭。界面只保留最新一帧待显示深度图，被替换掉、尚未显示的位图会回收。模型加载、推理和会话关闭都在这个后台线程上。切换尺寸会关闭旧会话并丢弃过期结果。
+摄像头使用 CameraX 最新帧策略。预处理、推理、后处理在三条单线程上流水执行，阶段之间只保留最新一帧。每个 `ImageProxy` 都在预处理结束后于 `finally` 中关闭。深度图位图复用，未显示或已被替换的位图回到缓冲池。模型加载、推理和会话关闭只在推理线程上。切换尺寸会关闭旧会话并丢弃过期结果。
 
 Kotlin 单元测试覆盖共享平滑黄金序列、重置、非有限输入、YUV stride、旋转映射，以及未保存尺寸时默认 384。Python 测试覆盖模型哈希不匹配、APK 资产被压缩或字节不一致，以及四组测量按尺寸和平滑状态分开汇总。这些都不能代替真机上的权限、预览、后端分布和连续测速。

@@ -100,7 +100,12 @@ def main():
             size = None
         flavor = str(summary.get('model_flavor', 'zipdepth_baseline'))
         short_flavor = flavor.removeprefix('zipdepth_')
-        local_model = None if size is None else ROOT / f'output/models/zipdepth_{short_flavor}_{size}.onnx'
+        local_model = None if size is None else next((
+            candidate for candidate in (
+                ROOT / 'output' / 'experiments_5600' / 'models' / f'zipdepth_{short_flavor}_{size}.onnx',
+                ROOT / 'output' / 'models' / f'zipdepth_{short_flavor}_{size}.onnx',
+            ) if candidate.is_file()
+        ), None)
         matches = bool(local_model and local_model.is_file() and sha256(local_model) == summary.get('model_sha256'))
         assessed = assess_measurement(summary, rows, matches)
         assessed['summary'] = str(path.relative_to(destination))

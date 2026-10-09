@@ -1,4 +1,4 @@
-param([ValidateSet('baseline','final')][string]$Model='baseline', [switch]$Offline)
+param([ValidateSet('baseline','final','selected')][string]$Model='selected', [switch]$Offline)
 $ErrorActionPreference='Stop'
 $repoRoot=Split-Path $PSScriptRoot -Parent
 # Gradle's Windows test worker cannot load its main class when the project or Gradle path contains non-ASCII characters.
@@ -82,8 +82,9 @@ try {
 } finally { Pop-Location }
 $assetObject=Get-Content -LiteralPath $assetReport -Raw -Encoding UTF8 | ConvertFrom-Json
 $models=@(256,384 | ForEach-Object {
-    $path=Join-Path $repoRoot "output/models/zipdepth_${Model}_${_}.onnx"
-    $metadataPath=Join-Path $repoRoot "output/models/zipdepth_${Model}_${_}.json"
+    $modelDir= if ($Model -eq 'selected') { Join-Path $repoRoot 'output/experiments_5600/models' } else { Join-Path $repoRoot 'output/models' }
+    $path=Join-Path $modelDir "zipdepth_${Model}_${_}.onnx"
+    $metadataPath=Join-Path $modelDir "zipdepth_${Model}_${_}.json"
     $metadata=Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $sha=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($sha -ne [string]$metadata.onnx_sha256) { throw "Source hash for size $_ does not match metadata." }

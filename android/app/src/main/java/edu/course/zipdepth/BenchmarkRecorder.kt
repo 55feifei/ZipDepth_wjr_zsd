@@ -12,8 +12,9 @@ import java.util.Locale
 
 data class FrameTiming(val analyzedNs: Long, val preprocessMs: Double, val inferenceMs: Double, val postprocessMs: Double)
 
-/** One worker owns this recorder; timestamps for displayed updates come from the UI. */
+/** Recorder calls may arrive from the inference and post threads. */
 class BenchmarkRecorder(private val context: Context) {
+    private val lock = Any()
     private var writer: BufferedWriter? = null
     private var folder: File? = null
     private var metadata = JSONObject()
@@ -23,23 +24,23 @@ class BenchmarkRecorder(private val context: Context) {
     private var lastDisplayedNs = 0L
     private var firstDisplayedNs = 0L
     private var armed = false
-    var active = false
+    @Volatile var active = false
         private set
     val durationNs = 300_000_000_000L
 
-    fun prepare(): File {
+    fun prepare(): File = synchronized(lock) {
         val destination = File(context.filesDir, "measurements/${System.currentTimeMillis()}").apply { mkdirs() }
         folder = destination
-        return destination
+        destination
     }
 
-    fun noteEngine(engine: DepthEngine, smoothing: Boolean) {
+    fun noteEngine(engine: DepthEngine, smoothing: Boolean) = synchronized(lock) {
         check(folder != null)
         metadata = sessionMetadata(engine, smoothing, null).put("phase", "armed")
         armed = true
     }
 
-    fun start(nowNs: Long, engine: DepthEngine, smoothing: Boolean, profile: File?) {
+    fun start(nowNs: Long, engine: DepthEngine, smoothing: Boolean, profile: File?) = synchronized(lock) {
         check(!active)
         val directory = folder ?: prepare()
         writer = File(directory, "frames.csv").bufferedWriter().also {
@@ -59,7 +60,7 @@ class BenchmarkRecorder(private val context: Context) {
             .put("smoothing", smoothing).put("requested_duration_s", 300)
             .put("backend", engine.backend).put("backend_at_start", engine.backend)
             .put("fallback_reason", engine.fallbackReason ?: JSONObject.NULL)
-            .put("latency_definition", "ImageProxy analyzer entry to ImageView.setImageBitmap; excludes sensor exposure and screen scanout")
+            .put("latency_definition", "ImageProxy analyzer entry to ImageView.setImageBitmap; excludes sensor exposure and screen scanout. Stage times are exclusive and overlap; ui_queue_ms is the residual, including inter-stage wait.")
             .put("battery_temp_start_c", batteryTemperature())
         if (Build.VERSION.SDK_INT >= 31) data.put("soc", Build.SOC_MODEL)
         if (profile?.isFile == true) {
@@ -69,7 +70,7 @@ class BenchmarkRecorder(private val context: Context) {
         return data
     }
 
-    fun add(timing: FrameTiming, shownNs: Long, engine: DepthEngine, smoothing: Boolean): Boolean {
+    fun add(timing: FrameTiming, shownNs: Long, engine: DepthEngine, smoothing: Boolean): Boolean = synchronized(lock) {
         if (!active) return false
         if (shownNs - startedNs > durationNs) return true
         if (firstDisplayedNs == 0L) firstDisplayedNs = shownNs
@@ -82,12 +83,14 @@ class BenchmarkRecorder(private val context: Context) {
             latencies.size, (shownNs-startedNs)/1e9, timing.preprocessMs, timing.inferenceMs, timing.postprocessMs,
             uiQueue,pipeline,fps,engine.backend,engine.size,smoothing,batteryTemperature()))
         if (latencies.size % 60 == 0) writer!!.flush()
-        return false
+        false
     }
 
-    fun remainingSeconds(nowNs: Long): Int = ((durationNs-(nowNs-startedNs))/1e9).toInt().coerceAtLeast(0)
+    fun remainingSeconds(nowNs: Long): Int = synchronized(lock) {
+        ((durationNs-(nowNs-startedNs))/1e9).toInt().coerceAtLeast(0)
+    }
 
-    fun finish(complete: Boolean, reason: String, engine: DepthEngine? = null): List<File> {
+    fun finish(complete: Boolean, reason: String, engine: DepthEngine? = null): List<File> = synchronized(lock) {
         if (engine != null && metadata.length() > 0) {
             metadata.put("backend", engine.backend).put("fallback_reason", engine.fallbackReason ?: JSONObject.NULL)
                 .put("model_sha256", engine.modelSha256).put("resolution", engine.size)
@@ -113,11 +116,13 @@ class BenchmarkRecorder(private val context: Context) {
             .put("inference_p50_ms",percentile(inference,.50)).put("inference_p95_ms",percentile(inference,.95))
             .put("battery_temp_end_c",batteryTemperature())
         File(folder!!,"summary.json").writeText(metadata.toString(2))
-        return folder!!.listFiles()?.filter { it.isFile } ?: emptyList()
+        folder!!.listFiles()?.filter { it.isFile } ?: emptyList()
     }
 
-    fun latestFiles(): List<File> = File(context.filesDir,"measurements").listFiles()?.filter { it.isDirectory }
+    fun latestFiles(): List<File> = synchronized(lock) {
+        File(context.filesDir,"measurements").listFiles()?.filter { it.isDirectory }
         ?.sortedByDescending { it.name }?.firstOrNull()?.listFiles()?.filter { it.isFile } ?: emptyList()
+    }
 
     private fun batteryTemperature(): Double = (context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
         ?.getIntExtra("temperature",-1) ?: -1) / 10.0

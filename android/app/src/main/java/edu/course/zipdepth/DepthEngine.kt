@@ -12,13 +12,14 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 
-/** All access (creation, inference, profiling, close) is confined to one worker. */
+/** All access (creation, inference, profiling, close) stays on the inference thread. */
 class DepthEngine(private val context: Context, val size: Int, private val threads: Int = 4) : AutoCloseable {
     private val environment = OrtEnvironment.getEnvironment()
     private val model = context.assets.open("zipdepth_${size}.onnx").use { it.readBytes() }
     val modelSha256 = MessageDigest.getInstance("SHA-256").digest(model).joinToString("") { "%02x".format(it) }
     private val input = ByteBuffer.allocateDirect(3 * size * size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
     private val tensor = OnnxTensor.createTensor(environment, input, longArrayOf(1, 3, size.toLong(), size.toLong()))
+    private val feeds = hashMapOf<String, OnnxTensor>("image" to tensor)
     private var session: OrtSession? = null
     private var optionsForSession: OrtSession.SessionOptions? = null
     private var closed = false
@@ -58,22 +59,28 @@ class DepthEngine(private val context: Context, val size: Int, private val threa
     private fun createWithFallback(profile: File?): OrtSession = try { createSession(true, profile) }
     catch (exception: OrtException) { fallbackReason = exception.message; createSession(false, profile) }
 
-    fun infer(rgb: FloatArray): FloatArray {
-        require(rgb.size == input.capacity())
+    fun inferInto(rgb: FloatArray, destination: FloatArray) {
+        require(rgb.size == input.capacity() && destination.size == size * size)
         input.clear(); input.put(rgb); input.rewind()
-        return try { run() } catch (exception: OrtException) {
+        try { runInto(destination) } catch (exception: OrtException) {
             if (backend == "CPU") throw exception
             fallbackReason = exception.message
             closeSession(); session = createSession(false, profilePrefix)
-            run()
+            runInto(destination)
         }
     }
 
-    private fun run(): FloatArray = (session ?: error("Inference session unavailable")).run(mapOf("image" to tensor)).use { result ->
-        val output = result.get("depth").get() as OnnxTensor
-        FloatArray(size * size).also {
-            output.floatBuffer.get(it)
-            require(it.all { value -> value.isFinite() }) { "Non-finite ONNX output" }
+    private fun runInto(destination: FloatArray) {
+        (session ?: error("Inference session unavailable")).run(feeds).use { result ->
+            val output = result.get("depth").get() as OnnxTensor
+            val decoded = output.floatBuffer
+            decoded.rewind()
+            decoded.get(destination)
+        }
+        var index = 0
+        while (index < destination.size) {
+            require(destination[index].isFinite()) { "Non-finite ONNX output" }
+            index++
         }
     }
 

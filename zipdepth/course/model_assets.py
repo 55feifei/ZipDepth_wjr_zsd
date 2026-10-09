@@ -53,8 +53,16 @@ def verify_source_models(models_dir: Path, prefix: str) -> dict:
     }
 
 
+def models_dir_for(root: Path, prefix: str) -> Path:
+    if prefix == 'zipdepth_selected':
+        experiment = root / 'output' / 'experiments_5600' / 'models'
+        if experiment.is_dir():
+            return experiment
+    return root / 'output' / 'models'
+
+
 def asset_sources(root: Path, prefix: str) -> dict:
-    models = root / 'output' / 'models'
+    models = models_dir_for(root, prefix)
     return {
         'assets/zipdepth_256.onnx': models / f'{prefix}_256.onnx',
         'assets/zipdepth_384.onnx': models / f'{prefix}_384.onnx',
@@ -103,7 +111,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == 'check-sources':
-            report = verify_source_models(args.root / 'output' / 'models', args.prefix)
+            report = verify_source_models(models_dir_for(args.root, args.prefix), args.prefix)
         else:
             report = verify_apk_assets(args.apk, asset_sources(args.root, args.prefix))
             args.report.parent.mkdir(parents=True, exist_ok=True)
