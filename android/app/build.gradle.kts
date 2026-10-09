@@ -1,8 +1,28 @@
 import java.io.File
+import java.security.MessageDigest
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+fun sha256Hex(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buffer = ByteArray(1024 * 1024)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            digest.update(buffer, 0, read)
+        }
+    }
+    return digest.digest().joinToString("") { "%02x".format(it) }
+}
+
+fun metadataField(file: File, name: String): String {
+    val match = Regex(""""$name"\s*:\s*"([0-9a-fA-F]{64})"""").find(file.readText())
+        ?: error("$name missing in ${file.name}")
+    return match.groupValues[1].lowercase()
 }
 
 val modelPrefix = providers.gradleProperty("modelPrefix").orElse("zipdepth_baseline")
@@ -21,13 +41,25 @@ val ensureDebugKeystore by tasks.registering(Exec::class) {
 }
 val copyModels by tasks.registering {
     val sourceModels = listOf(256, 384).associateWith { rootProject.file("../output/models/${modelPrefix.get()}_${it}.onnx") }
+    val metadataFiles = sourceModels.values.map { File(it.parentFile, "${it.nameWithoutExtension}.json") }
     inputs.files(sourceModels.values)
+    inputs.files(metadataFiles)
     inputs.file(rootProject.file("../tests/fixtures/turbo_lut.json"))
     inputs.property("modelPrefix", modelPrefix)
     outputs.dir(generatedModelAssets)
     doLast {
         val missing = sourceModels.values.filter { !it.isFile || it.length() < 1024 }
         check(missing.isEmpty()) { "Real validated ONNX models required before APK packaging: $missing" }
+        val checkpoints = mutableSetOf<String>()
+        sourceModels.forEach { (_, source) ->
+            val metadata = File(source.parentFile, "${source.nameWithoutExtension}.json")
+            check(metadata.isFile) { "ONNX metadata required before APK packaging: $metadata" }
+            val actual = sha256Hex(source)
+            val expected = metadataField(metadata, "onnx_sha256")
+            check(actual == expected) { "Refusing to package ${source.name}: SHA256 $actual does not match metadata $expected" }
+            checkpoints += metadataField(metadata, "checkpoint_sha256")
+        }
+        check(checkpoints.size == 1) { "256/384 models do not come from the same checkpoint: $checkpoints" }
         val destination = generatedModelAssets.get().asFile.apply { mkdirs() }
         sourceModels.forEach { (size, source) -> source.copyTo(destination.resolve("zipdepth_${size}.onnx"), overwrite = true) }
         rootProject.file("../tests/fixtures/turbo_lut.json").copyTo(destination.resolve("turbo_lut.json"), overwrite = true)

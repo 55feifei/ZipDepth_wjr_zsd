@@ -3,6 +3,7 @@ package edu.course.zipdepth
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
@@ -33,6 +34,7 @@ import java.io.File
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 class MainActivity : AppCompatActivity() {
@@ -58,7 +60,18 @@ class MainActivity : AppCompatActivity() {
     private var providerProfile: File? = null
     private var measurementFiles: List<File> = emptyList()
     private val displayedTimes = ArrayDeque<Long>()
+    private val pendingDisplay = AtomicReference<PendingDisplay?>(null)
     private var permissionAsked = false
+
+    private data class PendingDisplay(
+        val bitmap: Bitmap,
+        val token: Int,
+        val startedNs: Long,
+        val timing: FrameTiming,
+        val label: String,
+        val engine: DepthEngine,
+        val smoothing: Boolean,
+    )
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else binding.stats.text = "需要摄像头权限。点击重试授予权限或打开应用设置。"
@@ -84,7 +97,8 @@ class MainActivity : AppCompatActivity() {
         binding.preview.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         binding.preview.scaleType = PreviewView.ScaleType.FIT_CENTER
         binding.resolution.adapter = ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,listOf("256 × 256","384 × 384"))
-        binding.resolution.setSelection(if (prefs.getInt("size",256)==384) 1 else 0)
+        val storedSize = if (prefs.contains("size")) prefs.getInt("size", InputSize.DEFAULT) else null
+        binding.resolution.setSelection(InputSize.spinnerIndex(InputSize.resolve(storedSize)))
         binding.resolution.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) {}
             override fun onItemSelected(parent: AdapterView<*>?,view: View?,position: Int,id: Long) {
@@ -115,7 +129,36 @@ class MainActivity : AppCompatActivity() {
     private fun hasCameraPermission() = ContextCompat.checkSelfPermission(this,Manifest.permission.CAMERA)==PackageManager.PERMISSION_GRANTED
     private fun requestPermission() { permissionAsked=true; permissionRequest.launch(Manifest.permission.CAMERA) }
 
+    private fun discardPendingDisplay() {
+        pendingDisplay.getAndSet(null)?.bitmap?.let { bitmap -> if (!bitmap.isRecycled) bitmap.recycle() }
+    }
+
+    private fun publishDisplay(frame: PendingDisplay) {
+        val previous = pendingDisplay.getAndSet(frame)
+        if (previous == null) runOnUiThread { showPendingDisplay() }
+        else if (previous.bitmap !== frame.bitmap && !previous.bitmap.isRecycled) previous.bitmap.recycle()
+    }
+
+    private fun showPendingDisplay() {
+        val frame = pendingDisplay.getAndSet(null) ?: return
+        if (!resumed || frame.token != generation || isDestroyed) {
+            if (!frame.bitmap.isRecycled) frame.bitmap.recycle()
+            return
+        }
+        binding.depth.setImageBitmap(frame.bitmap)
+        val shown = SystemClock.elapsedRealtimeNanos()
+        displayedTimes.addLast(shown)
+        while (displayedTimes.size > 30) displayedTimes.removeFirst()
+        val fps = if (displayedTimes.size > 1) (displayedTimes.size - 1) * 1e9 / (displayedTimes.last - displayedTimes.first) else 0.0
+        binding.stats.text = String.format(Locale.CHINA, "深度更新 %.1f FPS · 处理至显示 %.1f ms\n预处理 %.1f · 推理 %.1f · 后处理 %.1f ms\n%s", fps, (shown - frame.startedNs) / 1e6, frame.timing.preprocessMs, frame.timing.inferenceMs, frame.timing.postprocessMs, frame.label)
+        binding.modelInfo.text = "${BuildConfig.MODEL_FLAVOR} · ${frame.engine.size} · ${frame.engine.backend} · SHA ${frame.engine.modelSha256.take(10)}"
+        if (!worker.isShutdown) worker.execute {
+            if (frame.token == generation && recorder.add(frame.timing, shown, frame.engine, frame.smoothing)) finishBenchmark(true, "completed_300s")
+        }
+    }
+
     private fun loadPipeline(size: Int,token: Int) {
+        discardPendingDisplay()
         binding.benchmark.isEnabled=false
         binding.modelInfo.text="载入 $size 模型…"
         worker.execute {
@@ -191,19 +234,7 @@ class MainActivity : AppCompatActivity() {
                             recorder.active -> "测试中：剩余 ${recorder.remainingSeconds(postEnd)} 秒"
                             else -> measurementHint
                         }
-                        runOnUiThread {
-                            if (!resumed || token!=generation) { bitmap.recycle(); return@runOnUiThread }
-                            binding.depth.setImageBitmap(bitmap)
-                            val shown=SystemClock.elapsedRealtimeNanos()
-                            displayedTimes.addLast(shown)
-                            while (displayedTimes.size>30) displayedTimes.removeFirst()
-                            val fps=if (displayedTimes.size>1) (displayedTimes.size-1)*1e9/(displayedTimes.last-displayedTimes.first) else 0.0
-                            binding.stats.text=String.format(Locale.CHINA,"深度更新 %.1f FPS · 处理至显示 %.1f ms\n预处理 %.1f · 推理 %.1f · 后处理 %.1f ms\n%s",fps,(shown-started)/1e6,timing.preprocessMs,timing.inferenceMs,timing.postprocessMs,label)
-                            binding.modelInfo.text="${BuildConfig.MODEL_FLAVOR} · ${currentEngine.size} · ${currentEngine.backend} · SHA ${currentEngine.modelSha256.take(10)}"
-                            if (!worker.isShutdown) worker.execute {
-                                if (token==generation && recorder.add(timing,shown,currentEngine,smoothingEnabled)) finishBenchmark(true,"completed_300s")
-                            }
-                        }
+                        publishDisplay(PendingDisplay(bitmap,token,started,timing,label,currentEngine,smoothingEnabled))
                     } catch (exception: Exception) {
                         processingFailed=true
                         smoother.reset(); colorizer?.reset(); unsmoothedPreviousRgb=null
@@ -229,6 +260,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 val current=engine ?: error("模型尚未载入")
                 val folder=recorder.prepare()
+                recorder.noteEngine(current,smoothingEnabled)
                 current.beginProfiling(File(folder,"ort_provider_sample"))
                 profileWarmup=10; measureWarmup=0; providerProfile=null
                 smoother.reset(); colorizer?.reset(); unsmoothedPreviousRgb=null
@@ -250,9 +282,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun finishBenchmark(complete: Boolean,reason: String) {
-        if (profileWarmup>0) engine?.endProfiling()
+        val currentEngine=engine
+        if (profileWarmup>0) currentEngine?.endProfiling()
         profileWarmup=0; measureWarmup=0; measurementPending=false
-        measurementFiles=recorder.finish(complete,reason)
+        measurementFiles=recorder.finish(complete,reason,currentEngine)
         measurementHint=if (complete) "测试完成，可导出 CSV、JSON 与后端采样。" else "测试停止：$reason"
         runOnUiThread {
             binding.resolution.isEnabled=true; binding.smoothing.isEnabled=true; binding.benchmark.isEnabled=engine!=null; binding.retry.isEnabled=true
@@ -283,6 +316,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         resumed=false
+        discardPendingDisplay()
         worker.execute {
             if (recorder.active || measurementPending) finishBenchmark(false,"activity_backgrounded")
             smoother.reset(); colorizer?.reset(); unsmoothedPreviousRgb=null
@@ -293,6 +327,7 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) { outState.putBoolean("permissionAsked",permissionAsked); super.onSaveInstanceState(outState) }
 
     override fun onDestroy() {
+        discardPendingDisplay()
         analysis?.clearAnalyzer(); cameraProvider?.unbindAll()
         worker.execute { engine?.close(); engine=null }
         worker.shutdown()

@@ -12,7 +12,7 @@
 
 ## 在线平滑
 
-输入RGB为HWC float32 `[0,1]`，深度为HW float32；两个数组大小相同。
+Android `TemporalSmoother` 与共享夹具使用平面 CHW：RGB 为 float32 `[0,1]`，下标 `c*H*W + y*W + x`；深度为 HW float32。Python `GatedEMA.update` 的参数仍是 HWC，测试在调用前把夹具从 CHW 转置。两端门控参数相同。
 首帧直接返回。若当前RGB与历史RGB的全图通道绝对差均值大于0.25，重置并直接返回。
 否则逐像素历史权重 `w=0.3*exp(-mean_channel(abs(rgb-current_history_rgb))/0.08)`。
 深度边缘：当前深度的向左和向上绝对差之和，除以 `max(P98-P2,1e-6)`，大于0.1的像素将w设为0。

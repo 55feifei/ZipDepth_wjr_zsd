@@ -164,6 +164,29 @@ def validate(model, dataset, criterion, device, amp=False, max_pairs=64):
             'temporal_alignment': 'shared_per_pair_median_mad', 'spatial_alignment': 'per_frame_affine_inverse_depth'}
 
 
+def measure_subset_validation(checkpoint, config):
+    """Score a checkpoint with the same fixed validation subset used in training.
+
+    The returned AbsRel is the only scale that may gate in-training ``best.pth``.
+    Full-split sequence metrics stay in the later selection pass.
+    """
+    seed = int(config.get('seed', 42))
+    device = torch.device(config.get('device', 'cuda' if torch.cuda.is_available() else 'cpu'))
+    amp = bool(config.get('amp', True)) and device.type == 'cuda'
+    from .data import TartanAirPairDataset
+    val_dataset = TartanAirPairDataset(
+        manifest_path=config['manifest'], split='val', augment=False,
+        input_size=int(config.get('input_size', 384)), seed=seed,
+        max_depth=float(config.get('max_depth', 80.0)))
+    model = strict_load_mobile_model(checkpoint, str(device))
+    enable_deterministic_mobile_pooling(model)
+    criterion = TemporalDepthLoss(temporal_weight=0.0)
+    metrics = validate(model, val_dataset, criterion, device, amp, int(config.get('max_val_pairs', 64)))
+    metrics['checkpoint'] = str(checkpoint)
+    metrics['baseline_scale'] = 'same_subset_aligned_absrel'
+    return metrics
+
+
 def train_temporal(config: dict, train_dataset=None, val_dataset=None, model=None):
     """Run finite-budget training; injectable datasets/model enable smoke tests.
 
@@ -264,6 +287,8 @@ def train_temporal(config: dict, train_dataset=None, val_dataset=None, model=Non
     started = time.monotonic()
     log_path = output / 'train.jsonl'
     baseline_absrel = config.get('baseline_absrel')
+    checkpoint_every = int(config.get('checkpoint_every', 0))
+    recorded_subset_updates = set()
 
     def elapsed():
         return elapsed_before + time.monotonic() - started
@@ -287,6 +312,25 @@ def train_temporal(config: dict, train_dataset=None, val_dataset=None, model=Non
         temporary.replace(destination)
         if improved:
             torch.save(saved, output / 'best.pth')
+        snapshot = None
+        if checkpoint_every > 0 and updates > 0 and updates % checkpoint_every == 0:
+            folder = output / 'checkpoints'
+            folder.mkdir(exist_ok=True)
+            snapshot = f'checkpoints/update_{updates:05d}.pth'
+            shutil.copy2(destination, output / snapshot)
+            meta = {**validation, 'update': updates, 'checkpoint': snapshot, 'eligible': eligible,
+                    'baseline_absrel': None if baseline_absrel is None else float(baseline_absrel),
+                    'baseline_scale': 'same_subset_aligned_absrel' if baseline_absrel is not None else 'spatial_only',
+                    'selection_score': score, 'saved_best': improved}
+            (folder / f'update_{updates:05d}.json').write_text(json.dumps(meta, indent=2), encoding='utf-8')
+        if updates not in recorded_subset_updates:
+            recorded_subset_updates.add(updates)
+            record = {**validation, 'update': updates, 'eligible': eligible,
+                      'baseline_absrel': None if baseline_absrel is None else float(baseline_absrel),
+                      'baseline_scale': 'same_subset_aligned_absrel' if baseline_absrel is not None else 'spatial_only',
+                      'selection_score': score, 'saved_best': improved, 'snapshot': snapshot}
+            with (output / 'subset_validation.jsonl').open('a', encoding='utf-8') as handle:
+                handle.write(json.dumps(record) + '\n')
 
     next_epoch, next_cursor = start_epoch, cursor
     stop = updates >= max_updates or (max_seconds > 0 and elapsed() >= max_seconds)

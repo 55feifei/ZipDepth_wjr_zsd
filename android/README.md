@@ -1,47 +1,146 @@
 # ZipDepth Android 演示
 
-本工程将经过一致性验证的 ZipDepth ONNX 完整打包到 APK，在手机上离线分析后置摄像头。界面显示 RGB 与相对逆深度，数值越大表示越近，色标为红近蓝远。输出没有米制标定。
+本应用把最终选中的 `output/experiments/single/best.pth` 导出的 ONNX 完整放进 APK，在手机上离线分析后置摄像头。时序平滑是应用里的可选后处理，不属于模型权重。界面同时显示 RGB 和相对逆深度：数值越大表示越近，色标红近蓝远。输出没有米制标定，不能读成“距离多少米”。
+
+首次安装且没有保存过尺寸时，默认使用 **384×384**。之后恢复上次手动选择的 384 或 256。已有安装如果保存过 256，会继续使用 256；验收默认演示时请手动切回 384。应用不会根据 FPS 自动切换模型。15 FPS 是本项目自己的性能目标，不是课程 PDF 规定的硬性门槛。
 
 ## 命令行构建
 
-在仓库根目录打开 PowerShell，运行：
+工程没有 `gradlew.bat` / Gradle Wrapper。构建脚本直接调用项目内的 Gradle 8.9：`output/tools/android/gradle-8.9/bin/gradle.bat`。JDK 17、Android SDK 35 和依赖缓存也在 `output/tools/android/`，不修改系统安装或 PATH。仓库路径含中文时，脚本会创建 `%LOCALAPPDATA%\ZipDepthRepo` 目录联接后再构建，避免 Windows 上的 Gradle 测试进程找不到主类。
+
+在仓库根目录打开 PowerShell：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File android/setup-build.ps1
-powershell -ExecutionPolicy Bypass -File android/build.ps1 -Model baseline
+Set-Location -LiteralPath 'F:\鲜可机器智能课设\ZipDepth'
+powershell -ExecutionPolicy Bypass -File .\android\setup-build.ps1
+powershell -ExecutionPolicy Bypass -File .\android\build.ps1 -Model final
 ```
 
-安装器只使用官方 Adoptium、Gradle 和 Google 下载地址，检查工具包校验值。JDK 17、Gradle 8.9、SDK 35 与缓存保存在 `output/tools/android/`，不修改系统安装或 PATH。第一次需要联网下载工具、Android SDK 和 Maven 依赖；依赖缓存齐全后可加 `-Offline` 构建。
+`setup-build.ps1` 只在 JDK、Gradle 或 SDK 组件缺失时需要执行。当前机器已经具备 JDK 17、Gradle 8.9、compileSdk 35 和 Build Tools 35.0.0 时，直接构建即可。依赖缓存齐全后可加 `-Offline`。
 
-构建前需存在 `output/models/zipdepth_baseline_256.onnx` 和 `zipdepth_baseline_384.onnx`，以及共享 `tests/fixtures/turbo_lut.json`。Gradle 自动将真实模型复制到生成资产；文件缺失时直接失败。微调模型经重新验证并以 `zipdepth_final_256.onnx`、`zipdepth_final_384.onnx` 保存后，运行 `android/build.ps1 -Model final`。生成 APK 为 `output/apk/zipdepth-baseline-debug.apk` 或 `zipdepth-final-debug.apk`，并打印 SHA256。
+`-Model final` 使 `MODEL_FLAVOR` 为 `zipdepth_final`，并打包：
 
-## Android Studio 导入
+| 源文件 | APK 内资产 |
+|---|---|
+| `output/models/zipdepth_final_384.onnx` | `assets/zipdepth_384.onnx` |
+| `output/models/zipdepth_final_256.onnx` | `assets/zipdepth_256.onnx` |
+| `tests/fixtures/turbo_lut.json` | `assets/turbo_lut.json` |
 
-打开本仓库的 `android` 文件夹，选择 JDK 17；可选用安装脚本产生的 `output/tools/android/jdk-17...`。`local.properties` 已写入项目内 SDK 地址，Gradle Wrapper 使用 8.9。手机运行所需架构为 arm64-v8a，最低 Android 9（API 28）。
+构建前会核对两个 ONNX 与各自 JSON 里的 `onnx_sha256`，并确认它们来自同一个 checkpoint。文件缺失、哈希不一致或 APK 里的模型字节与源文件不同时，构建失败。ONNX 以不压缩方式打进 APK。成功后的产物：
 
-## 荣耀 100 Pro 安装
+```text
+output/apk/zipdepth-final-debug.apk
+output/apk/build_evidence_final.json
+output/apk/apk_asset_check_final.json
+```
 
-1. 在手机设置中开启开发者选项与 USB 调试，用可传输数据的 USB 线连接电脑，并在手机上允许本机调试。
-2. 用 `output/tools/android/sdk/platform-tools/adb.exe devices -l` 检查设备状态为 `device`；`unauthorized` 需要在手机确认授权。
-3. 执行 `adb install -r output/apk/zipdepth-baseline-debug.apk`，也可以传输 APK 后从手机文件管理器安装。
-4. 打开「ZipDepth 实时深度」，授予摄像头权限。权限拒绝时可点「重试」或进入应用设置重新授权。
+课程演示使用 debug APK，便于之后用 `run-as` 读取应用内部测量文件。
 
-先用 256 输入。384 通常提供更多细节，但需以实际持续测速决定是否达到 15 FPS。界面 FPS 统计实际深度图更新次数；摄像头预览流畅不代表深度推理达到同一帧率。
+## Android Studio
 
-## 五分钟实测与结果导出
+Android Studio 不是必需的。若要导入，打开本仓库的 `android` 文件夹，选择 JDK 17，例如 `output/tools/android/jdk-17*`。`local.properties` 指向项目内 SDK。不要期待仓库里存在 Gradle Wrapper；命令行构建以上面的 `android/build.ps1` 为准。手机架构为 arm64-v8a，最低 Android 9（API 28）。
 
-点「测试 5 分钟」后，程序先用 10 帧生成 ONNX Runtime 后端事件采样，再额外预热 10 帧，然后记录 300 秒。测试期间固定输入尺寸和平滑开关，结束后点「导出测量」获得：
+## 安装到荣耀 100 Pro
 
-- `frames.csv`：逐帧预处理、推理、后处理、UI 队列与处理至显示时间、累计更新 FPS、后端、输入尺寸、平滑状态和电池温度。
-- `summary.json`：设备系统、模型 SHA256、实际后端事件统计、P50/P95、实测 FPS 与完成状态。
-- `ort_provider_sample_*.json`：真实算子 provider 分布；显示 `XNNPACK + CPU` 表示启用 XNNPACK 且可能有算子落到 CPU。
+1. 手机开启开发者选项和 USB 调试，用可传输数据的线连接电脑，并在手机上允许这台电脑调试。
+2. 确认设备状态为 `device`：
 
-处理至显示延迟从 `ImageProxy` 分析回调开始到 `ImageView.setImageBitmap`，不包含传感器曝光和屏幕扫描。电池温度用于观察发热趋势，不等价于芯片温度。后台、旋转重建、推理错误会结束当前测试并标为未完成；返回后可重新开始。结果在应用内部 `files/measurements/`，调试 APK 也可用 `adb shell run-as edu.course.zipdepth` 读取。
+```powershell
+& .\output\tools\android\sdk\platform-tools\adb.exe devices -l
+```
+
+`unauthorized` 需要在手机上确认授权。多台设备时，后面的命令加上 `--serial <设备号>`。
+
+3. 安装并启动：
+
+```powershell
+& 'F:\ANACONDA\envs\ML1\python.exe' -B .\scripts\verify_android.py `
+  --install `
+  --apk .\output\apk\zipdepth-final-debug.apk
+```
+
+也可以把 APK 拷到手机后从文件管理器安装。签名冲突时，卸载会清掉应用内测量数据；先按下面的方式导出或 `adb pull` 再卸载。
+
+4. 打开「ZipDepth 实时深度」，授予摄像头权限。界面应显示 `zipdepth_final`、当前边长、后端和模型 SHA256 前缀。
+
+## 界面与输出含义
+
+- RGB 预览和深度图使用同一块中心正方形视野。预处理是校正方向、中心裁剪、双线性缩放，再变成 RGB `[0,1]` 的 CHW 输入。ImageNet mean/std 已在模型内部，调用端不再标准化。
+- 深度图是相对逆深度响应。高值较近，显示为红色；低值较远，显示为蓝色。
+- 深度更新 FPS 统计的是深度图实际显示次数，不是摄像头预览帧率。
+- 处理至显示延迟从 CameraX 分析回调进入开始，到 `ImageView.setImageBitmap` 为止，不含传感器曝光和屏幕扫描。
+- 时序平滑默认开启。关闭后只做当帧着色。切换尺寸、平滑开关或回到前台都会清空平滑历史。
+- 模型行里的后端来自实际会话。XNNPACK 是 CPU 加速执行提供程序，不是手机 NPU。初始化或推理失败时会重建 CPU 会话，并在测量结果里保留回退原因和最终后端。
+- 电池温度只用于观察趋势，不是芯片温度。
+
+## 五分钟实测
+
+点「测试 5 分钟」后，先用 10 帧采样 ONNX Runtime 后端，再额外预热 10 帧，然后记录 300 秒。测速期间尺寸和平滑开关固定。测速时不要录屏。建议四组都在同一部手机、相近室内场景和相同亮度下完成，并关闭省电模式：
+
+| 测试 | 输入 | 时序平滑 |
+|---|---:|---|
+| A | 384 | 开 |
+| B | 384 | 关 |
+| C | 256 | 开 |
+| D | 256 | 关 |
+
+组间尽量让电池温度回到第一组开始时的约 ±2℃。进入后台、旋转导致重建或推理失败会结束本次测试，并写成未完成。
+
+结束后点「导出测量」，或在电脑上采集。采集不会删除手机上的原始文件在电脑侧的副本：
+
+```powershell
+& 'F:\ANACONDA\envs\ML1\python.exe' -B .\scripts\verify_android.py --collect
+```
+
+每次测试目录包含：
+
+- `frames.csv`：逐帧预处理、推理、后处理、UI 队列、处理至显示、累计更新 FPS、后端、尺寸、平滑状态和电池温度。
+- `summary.json`：设备、模型 SHA256、后端、`backend_at_start`、回退原因、P50/P95、实测 FPS 和完成状态。
+- `ort_provider_sample_*.json`：算子 provider 分布。`XNNPACK + CPU` 表示启用了 XNNPACK，部分算子仍可能落在 CPU。
+
+汇总写在 `output/device/acceptance.json`。384 开、384 关、256 开、256 关按配置分开，不会互相覆盖。没有任何配置达到 15 FPS 时，`recommended_final_size` 为 null，不会把 256 标成达标推荐。
+
+人工功能验收另外记录在 `output/device/manual_acceptance.json`。只有 `complete` 为 true，且下列检查项全部为 true，才算人工验收完成：
+
+`first_launch_384`、`camera_granted`、`camera_denied_retry`、`camera_permanent_deny_settings`、`switch_384_256`、`smoothing_toggle`、`rotation`、`background_foreground`、`benchmark_background_incomplete`、`offline_inference`、`export_measurements`、`five_minute_stable`。
+
+## 演示录像
+
+四组测速结束后，让应用留在前台，再录 120 秒。录制期间展示近远物体、缓慢移动、384/256 切换和平滑开关：
+
+```powershell
+& 'F:\ANACONDA\envs\ML1\python.exe' -B .\scripts\verify_android.py `
+  --record `
+  --record-seconds 120
+```
+
+视频保存为 `output/device/demo.mp4`。总体完成状态只有在四组有效测量、人工验收和这段录像都存在时才为真。
+
+## 真机结果
+
+截至本次构建，电脑上的 `adb devices` 没有已授权手机。因此还没有安装结果、功能验收、四组五分钟数据和演示录像。这些不能用电脑推理速度代替。手机连接并完成上面的步骤后，结果应出现在：
+
+```text
+output/device/device.json
+output/device/installation.json
+output/device/files/measurements/
+output/device/acceptance.json
+output/device/manual_acceptance.json
+output/device/demo.mp4
+```
+
+## 故障排查
+
+- 模型载入失败：确认安装的是 `zipdepth-final-debug.apk`，而不是缺少 ONNX 的中间包。构建日志里的哈希必须和 `output/models/zipdepth_final_*.json` 一致。
+- 摄像头权限被拒绝：点「重试」。若系统不再弹出权限框，重试会打开应用设置，授权后返回应用再点重试。
+- 有预览但没有深度：看模型行是否仍停在“载入”。推理失败时统计行会给出原因，点「重试」重建会话。
+- 深度图方向不对：预览和深度共用 1:1 视口；旋转后应重新对齐。若仍不对，不要用截图代替实机旋转检查。
+- 安装提示签名冲突：这是调试签名变化。先导出已有测量，再卸载旧包后安装。
+- 关闭 Wi-Fi 和移动数据后仍应能加载模型并推理。应用清单没有网络权限，模型在 APK 内。
+- 构建找不到 `gradlew.bat` 是预期情况。使用 `android/build.ps1`，不要临时生成一套不同版本的 Wrapper。
 
 ## 实现与验证
 
-摄像头使用 CameraX 最新帧策略和单个后台分析线程；所有帧在 `finally` 关闭。YUV 转 RGB 明确处理两个 stride，先旋转、中心正方形裁剪再双线性缩放，生成 RGB `[0,1]` NCHW 输入；ImageNet 标准化保留在模型内部。RGBA 文档和不同设备的缓冲区通道排列可能引入歧义，因此本版本采用明确的 YUV 平面读法。
+摄像头使用 CameraX 最新帧策略和单个后台线程。每个 `ImageProxy` 都在 `finally` 中关闭。界面只保留最新一帧待显示深度图，被替换掉、尚未显示的位图会回收。模型加载、推理和会话关闭都在这个后台线程上。切换尺寸会关闭旧会话并丢弃过期结果。
 
-ONNX Runtime 优先 XNNPACK，初始化或推理失败时重建 CPU 会话并记录原因。门控 EMA 与 Python 共享黄金序列；RGB 变化抑制历史权重，深度边缘不混合；切场景、恢复前台、改变尺寸或平滑状态均重置历史。显示色标以 P2/P98 缓慢更新，防止每帧 min/max 拉伸造成额外闪烁。
-
-构建执行 Kotlin 单元测试：共享 Python 平滑黄金序列、重置、非有限值输入、YUV stride 和旋转映射。它们验证算法与部分摄像头处理数学；真正的权限、预览映射、后端分布、连续测速和系统兼容性必须在已连接手机上完成。
+Kotlin 单元测试覆盖共享平滑黄金序列、重置、非有限输入、YUV stride、旋转映射，以及未保存尺寸时默认 384。Python 测试覆盖模型哈希不匹配、APK 资产被压缩或字节不一致，以及四组测量按尺寸和平滑状态分开汇总。这些都不能代替真机上的权限、预览、后端分布和连续测速。

@@ -172,6 +172,37 @@ class TrainingResumeTests(unittest.TestCase):
             saved = torch.load(root / 'new' / 'last.pth', weights_only=True)
             self.assertEqual(saved['global_step'], 1)
 
+    def test_failed_subset_gate_keeps_snapshot_and_log(self):
+        model = nn.Sequential(nn.Conv2d(3, 1, 1), nn.Softplus())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {'device': 'cpu', 'amp': False, 'seed': 42, 'temporal_weight': 0.3,
+                      'grad_accum': 2, 'max_updates': 1, 'epochs': 1, 'max_val_pairs': 2,
+                      'checkpoint_every': 1, 'baseline_absrel': 1e-12, 'output': str(root / 'run')}
+            summary = train_temporal(config, _ToyPairs(), _ToyPairs(), copy.deepcopy(model))
+            self.assertIsNone(summary['best_checkpoint'])
+            self.assertFalse((root / 'run' / 'best.pth').exists())
+            self.assertTrue((root / 'run' / 'checkpoints' / 'update_00001.pth').is_file())
+            rows = [json.loads(line) for line in (root / 'run' / 'subset_validation.jsonl').read_text(encoding='utf-8').splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertFalse(rows[0]['eligible'])
+            self.assertEqual(rows[0]['baseline_scale'], 'same_subset_aligned_absrel')
+            self.assertEqual(rows[0]['pairs'], 2)
+
+    def test_matching_subset_baseline_can_save_best(self):
+        model = nn.Sequential(nn.Conv2d(3, 1, 1), nn.Softplus())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {'device': 'cpu', 'amp': False, 'seed': 42, 'temporal_weight': 0.3,
+                      'grad_accum': 2, 'max_updates': 1, 'epochs': 1, 'max_val_pairs': 2,
+                      'checkpoint_every': 1, 'baseline_absrel': 10.0, 'output': str(root / 'run')}
+            summary = train_temporal(config, _ToyPairs(), _ToyPairs(), copy.deepcopy(model))
+            self.assertTrue((root / 'run' / 'best.pth').is_file())
+            self.assertEqual(summary['best_selection'], 'temporal_with_absrel_gate')
+            rows = [json.loads(line) for line in (root / 'run' / 'subset_validation.jsonl').read_text(encoding='utf-8').splitlines()]
+            self.assertTrue(rows[0]['eligible'])
+            self.assertTrue(rows[0]['saved_best'])
+
     def test_validation_rejects_all_empty_depth(self):
         class EmptyPairs(_ToyPairs):
             def __getitem__(self, index):

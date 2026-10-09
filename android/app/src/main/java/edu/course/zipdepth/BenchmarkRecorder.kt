@@ -22,6 +22,7 @@ class BenchmarkRecorder(private val context: Context) {
     private var startedNs = 0L
     private var lastDisplayedNs = 0L
     private var firstDisplayedNs = 0L
+    private var armed = false
     var active = false
         private set
     val durationNs = 300_000_000_000L
@@ -32,6 +33,12 @@ class BenchmarkRecorder(private val context: Context) {
         return destination
     }
 
+    fun noteEngine(engine: DepthEngine, smoothing: Boolean) {
+        check(folder != null)
+        metadata = sessionMetadata(engine, smoothing, null).put("phase", "armed")
+        armed = true
+    }
+
     fun start(nowNs: Long, engine: DepthEngine, smoothing: Boolean, profile: File?) {
         check(!active)
         val directory = folder ?: prepare()
@@ -40,19 +47,26 @@ class BenchmarkRecorder(private val context: Context) {
         }
         latencies.clear(); inference.clear(); firstDisplayedNs = 0; lastDisplayedNs = 0
         startedNs = nowNs
-        metadata = JSONObject().put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL)
+        metadata = sessionMetadata(engine, smoothing, profile).put("phase", "measuring")
+        active = true
+        armed = true
+    }
+
+    private fun sessionMetadata(engine: DepthEngine, smoothing: Boolean, profile: File?): JSONObject {
+        val data = JSONObject().put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL)
             .put("android_release", Build.VERSION.RELEASE).put("api", Build.VERSION.SDK_INT).put("hardware", Build.HARDWARE)
             .put("model_flavor", BuildConfig.MODEL_FLAVOR).put("model_sha256", engine.modelSha256).put("resolution", engine.size)
-            .put("smoothing", smoothing).put("requested_duration_s", 300).put("backend", engine.backend)
+            .put("smoothing", smoothing).put("requested_duration_s", 300)
+            .put("backend", engine.backend).put("backend_at_start", engine.backend)
             .put("fallback_reason", engine.fallbackReason ?: JSONObject.NULL)
             .put("latency_definition", "ImageProxy analyzer entry to ImageView.setImageBitmap; excludes sensor exposure and screen scanout")
             .put("battery_temp_start_c", batteryTemperature())
-        if (Build.VERSION.SDK_INT >= 31) metadata.put("soc", Build.SOC_MODEL)
+        if (Build.VERSION.SDK_INT >= 31) data.put("soc", Build.SOC_MODEL)
         if (profile?.isFile == true) {
-            metadata.put("profile", profile.name)
-            metadata.put("provider_node_events", providerCounts(profile))
+            data.put("profile", profile.name)
+            data.put("provider_node_events", providerCounts(profile))
         }
-        active = true
+        return data
     }
 
     fun add(timing: FrameTiming, shownNs: Long, engine: DepthEngine, smoothing: Boolean): Boolean {
@@ -73,9 +87,24 @@ class BenchmarkRecorder(private val context: Context) {
 
     fun remainingSeconds(nowNs: Long): Int = ((durationNs-(nowNs-startedNs))/1e9).toInt().coerceAtLeast(0)
 
-    fun finish(complete: Boolean, reason: String): List<File> {
-        if (!active) return folder?.listFiles()?.filter { it.isFile } ?: emptyList()
+    fun finish(complete: Boolean, reason: String, engine: DepthEngine? = null): List<File> {
+        if (engine != null && metadata.length() > 0) {
+            metadata.put("backend", engine.backend).put("fallback_reason", engine.fallbackReason ?: JSONObject.NULL)
+                .put("model_sha256", engine.modelSha256).put("resolution", engine.size)
+        }
+        if (!active) {
+            if (armed && folder != null) {
+                armed = false
+                metadata.put("completed", false).put("stop_reason", reason)
+                    .put("depth_updates", metadata.optInt("depth_updates", 0))
+                    .put("observed_update_span_s", metadata.optDouble("observed_update_span_s", 0.0))
+                    .put("battery_temp_end_c", batteryTemperature())
+                File(folder!!, "summary.json").writeText(metadata.toString(2))
+            }
+            return folder?.listFiles()?.filter { it.isFile } ?: emptyList()
+        }
         active = false
+        armed = false
         writer?.close(); writer = null
         val elapsed = if (lastDisplayedNs > firstDisplayedNs) (lastDisplayedNs-firstDisplayedNs)/1e9 else 0.0
         metadata.put("completed", complete).put("stop_reason", reason).put("depth_updates",latencies.size)
