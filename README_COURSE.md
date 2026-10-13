@@ -82,6 +82,28 @@ Android工程在 `android/`，使用专用开发工具（`output/tools/android`�
 
 完整数据下载期间，`scripts/course_pipeline.py`作为本地后台作业等待12个归档校验/提取完成，然后执行正式训练、评测、四组视频、最终APK和软件打包。状态见`output/pipeline/status.json`，逐阶段“做什么/为什么/选择理由”见`progress.md`。此进程需要电脑保持运行；不是定时服务。等待阶段可建立`output/pipeline/STOP`停止等待，恢复前移除该文件；训练中断可由last.pth恢复。
 
+## 3D 点云可视化
+
+`scripts/visualize_pointcloud.py` 把深度结果反投影成 RGB 着色点云，用 Open3D 交互显示，并可导出 PLY 或录制 MP4。输入可以是图片、视频、图片文件夹，也可以是 `infer.py --save-raw` 保存的 `.npy`（单个文件或帧文件夹，此时用 `--rgb` 指定颜色来源）。没有 GPU 时会自动使用 CPU。额外依赖为 `pip install open3d`。
+
+```powershell
+# 单张图片：交互窗口 + 导出 PLY
+python scripts/visualize_pointcloud.py --input assets/examples/im0.jpg --save output/pointcloud/im0.ply
+# 视频：动态点云，斜视角录制为 MP4（不弹窗）
+python scripts/visualize_pointcloud.py --input assets/examples/clip.mp4 --smooth --yaw 25 --pitch 10 --pullback 2 --no-display --record output/pointcloud/clip_cloud.mp4
+# 复用 infer.py --save-raw 的 .npy 深度，颜色取自原视频，每帧导出 PLY
+python scripts/visualize_pointcloud.py --input output/pointcloud/clip_depth_frames --rgb assets/examples/clip.mp4 --save output/pointcloud/clip_ply
+# 课程微调权重（NPU 结构）
+python scripts/visualize_pointcloud.py --checkpoint output/experiments/temporal_0.1/best.pth --npu --input assets/examples/clip.mp4 --smooth
+# 打开已保存的 PLY/PCD；传入文件夹则按帧播放
+python scripts/view_pointcloud.py output/pointcloud/im0.ply
+python scripts/view_pointcloud.py output/pointcloud/clip_ply --fps 10
+```
+
+Windows 11 已移除 3D 查看器，双击 `.ply` 可能因关联程序不存在而被拦截，请用上面的 `view_pointcloud.py`，或安装 CloudCompare / MeshLab 后通过“打开方式”关联。
+
+模型输出的是相对逆深度，脚本把 2%/98% 分位映射到虚拟深度 `--near`/`--far`（默认 1/10）后再反投影，因此**点云形状可信，尺寸不是米制**。内参默认按水平视场角 `--fov 60` 估算，已标定时用 `--fx/--fy/--cx/--cy`（原始分辨率像素）。视频的深度范围用 EMA 平滑（`--range-ema`），`--smooth` 复用课程的门控 EMA。`--stride` 控制采样密度，`--edge-threshold` 去除深度断层处的飞点。窗口内鼠标拖动旋转、滚轮缩放，空格暂停，Q/Esc 退出。逐帧点云都在当前帧的相机坐标系下，不做多帧融合；要拼接成完整场景，还需要相机位姿。
+
 ## 结果、限制与AI使用
 
 - 原模型ONNX：`output/models/zipdepth_baseline_{256,384}.onnx`；基线电脑视频：`output/videos/baseline_demo.mp4`。
