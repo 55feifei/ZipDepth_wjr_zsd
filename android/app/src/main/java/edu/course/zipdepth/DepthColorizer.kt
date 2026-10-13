@@ -46,8 +46,14 @@ class DepthColorizer(context: Context, private val size: Int) {
             pixels[i] = lut[((depth[i] - limit) / span * 255).toInt().coerceIn(0, 255)]
             i++
         }
+        return present(pixels)
+    }
+
+    /** Wraps ARGB pixels (for example a bokeh frame) in a pooled bitmap; same checkout rules as [render]. */
+    fun present(argb: IntArray): Bitmap {
+        require(argb.size == size * size)
         val bitmap = spare.removeFirstOrNull() ?: Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        bitmap.setPixels(pixels, 0, size, 0, 0, size, size)
+        bitmap.setPixels(argb, 0, size, 0, 0, size, size)
         return bitmap
     }
 

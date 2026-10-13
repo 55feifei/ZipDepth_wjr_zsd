@@ -104,6 +104,27 @@ Windows 11 已移除 3D 查看器，双击 `.ply` 可能因关联程序不存在
 
 模型输出的是相对逆深度，脚本把 2%/98% 分位映射到虚拟深度 `--near`/`--far`（默认 1/10）后再反投影，因此**点云形状可信，尺寸不是米制**。内参默认按水平视场角 `--fov 60` 估算，已标定时用 `--fx/--fy/--cx/--cy`（原始分辨率像素）。视频的深度范围用 EMA 平滑（`--range-ema`），`--smooth` 复用课程的门控 EMA。`--stride` 控制采样密度，`--edge-threshold` 去除深度断层处的飞点。窗口内鼠标拖动旋转、滚轮缩放，空格暂停，Q/Esc 退出。逐帧点云都在当前帧的相机坐标系下，不做多帧融合；要拼接成完整场景，还需要相机位姿。
 
+## 景深渲染（Bokeh）
+
+`zipdepth/bokeh.py` 用预测深度做“人像模式”式的浅景深：实现的是 [BokehMe](https://juewenpeng.github.io/BokehMe/)（CVPR 2022）的经典散射渲染器。每个像素按模糊半径 `K·(d − d_focus)` 把颜色散射到一个圆盘上，`1/(r²+0.2)` 权重让清晰像素压住叠在上面的模糊像素，`tanh` 边缘做抗锯齿，`--gamma` 先线性化再还原，使高光形成光斑。`scripts/bokeh_render.py` 是命令行入口，手机端由 `android/.../BokehRenderer.kt` 逐步镜像同一算法。
+
+```powershell
+# 单张图片：对焦点 x,y 取 [0,1]，输出景深图和四联图（RGB/视差/模糊量/景深）
+python scripts/bokeh_render.py --input assets/examples/img1.jpg --focus 0.48,0.5
+# 同一张图前后扫动焦平面，生成重对焦动画
+python scripts/bokeh_render.py --input assets/examples/im0.jpg --sweep 48
+# 视频：时序平滑深度，手机同款半分辨率散射，附视差列
+python scripts/bokeh_render.py --input assets/examples/clip.mp4 --smooth --downsample 2 --with-depth
+# 课程微调权重（NPU 结构）
+python scripts/bokeh_render.py --checkpoint output/experiments/temporal_0.1/best.pth --npu --input assets/examples/clip.mp4 --smooth --downsample 2
+```
+
+结果默认写到 `output/bokeh/`：图片为 `<名>_bokeh.jpg` 与 `<名>_bokeh_panel.jpg`，扫焦为 `<名>_refocus.mp4`，视频为 `<名>_bokeh.mp4`。`--strength` 是整个视差范围对应的模糊半径（占长边比例，默认 0.03），越大虚化越强。`--downsample 2` 是手机方案：在半分辨率散射再双线性放大，模糊半径不到半像素的地方直接保留原图，640×480 在本机 CPU 上约 0.35 s，全分辨率约 1.5–2 s，两者肉眼几乎一致。
+
+视差由相对逆深度按 2%/98% 分位归一化，对焦值取对焦点 9×9 窗口的中位数；视频里分位范围和对焦值都做 EMA，避免虚化随帧“呼吸”。只实现了 BokehMe 的经典渲染器，没有其神经网络修复部分，所以前景边缘可能出现轻微光晕或漏色，深度边界错误也会直接表现成虚化错误。
+
+手机端：打开应用里的「景深 Bokeh」开关，下方画面从深度色图变成景深预览，点击画面即可重新对焦。算法与 Python 一致，用 `tests/fixtures/bokeh.json` 做逐像素黄金比对（`python tests/test_bokeh.py --write` 重新生成）。景深模式下不能启动五分钟测速，测速只统计深度图链路。
+
 ## 结果、限制与AI使用
 
 - 原模型ONNX：`output/models/zipdepth_baseline_{256,384}.onnx`；基线电脑视频：`output/videos/baseline_demo.mp4`。

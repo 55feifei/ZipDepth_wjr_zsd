@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Rational
 import android.util.Size
+import android.view.MotionEvent
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -39,6 +40,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
+import kotlin.math.min
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -57,6 +59,11 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var preprocessor: YuvPreprocessor? = null
     @Volatile private var slotPool: SlotPool? = null
     private var colorizer: DepthColorizer? = null
+    private var bokehRenderer: BokehRenderer? = null
+    private var bokehPixels = IntArray(0)
+    private var appliedFocusVersion = -1
+    @Volatile private var bokehEnabled = false
+    @Volatile private var focusPoint = FocusPoint(.5, .5, 0)
     private var unsmoothedPreviousRgb: FloatArray? = null
     private val smoother = TemporalSmoother()
     private lateinit var recorder: BenchmarkRecorder
@@ -92,6 +99,9 @@ class MainActivity : AppCompatActivity() {
         val smoothing: Boolean,
         val recordable: Boolean,
     )
+
+    /** Focus point in [0,1] of the square model frame; a new version snaps the focus instead of easing. */
+    private data class FocusPoint(val u: Double, val v: Double, val version: Int)
 
     private val permissionRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else binding.stats.text = "需要摄像头权限。点击重试授予权限或打开应用设置。"
@@ -134,6 +144,25 @@ class MainActivity : AppCompatActivity() {
             smoothingEnabled = enabled
             prefs.edit().putBoolean("smoothing",enabled).apply()
             postExecutor.tryExecute { smoother.reset(); colorizer?.reset(); unsmoothedPreviousRgb=null }
+        }
+        binding.bokeh.setOnCheckedChangeListener { _,enabled ->
+            bokehEnabled = enabled
+            binding.depthLabel.text = if (enabled) "Bokeh 景深 · 点击画面对焦" else "相对逆深度 · 红近 蓝远"
+            binding.depth.contentDescription = if (enabled) "深度驱动的景深渲染" else "实时相对逆深度图"
+            postExecutor.tryExecute { bokehRenderer?.reset(); colorizer?.reset() }
+        }
+        binding.depth.setOnTouchListener { view,event ->
+            if (!bokehEnabled) return@setOnTouchListener false
+            if (event.actionMasked == MotionEvent.ACTION_UP) {
+                val side = min(view.width,view.height).toFloat()
+                if (side > 0f) {
+                    val u = ((event.x - (view.width - side) / 2f) / side).coerceIn(0f,1f)
+                    val v = ((event.y - (view.height - side) / 2f) / side).coerceIn(0f,1f)
+                    focusPoint = FocusPoint(u.toDouble(),v.toDouble(),focusPoint.version + 1)
+                }
+                view.performClick()
+            }
+            true
         }
         binding.retry.setOnClickListener {
             if (hasCameraPermission()) {
@@ -223,6 +252,7 @@ class MainActivity : AppCompatActivity() {
                     if (token != generation) return@tryExecute
                     val previous = colorizer
                     colorizer = DepthColorizer(this, size)
+                    bokehRenderer = BokehRenderer(size)
                     previous?.clear()
                     smoother.reset()
                     unsmoothedPreviousRgb = null
@@ -340,7 +370,15 @@ class MainActivity : AppCompatActivity() {
                     unsmoothedPreviousRgb = null
                     smoother.process(slot.rgb, slot.depth, slot.size, slot.size)
                 } else unsmoothed(slot.rgb, slot.depth)
-                bitmap = currentColorizer.render(smoothed.depth, smoothed.sceneReset)
+                val bokeh = bokehRenderer?.takeIf { bokehEnabled && it.width == slot.size }
+                bitmap = if (bokeh != null) {
+                    if (bokehPixels.size != slot.depth.size) bokehPixels = IntArray(slot.depth.size)
+                    val point = focusPoint
+                    val snap = smoothed.sceneReset || point.version != appliedFocusVersion
+                    appliedFocusVersion = point.version
+                    bokeh.render(slot.rgb, smoothed.depth, point.u, point.v, snap, bokehPixels)
+                    currentColorizer.present(bokehPixels)
+                } else currentColorizer.render(smoothed.depth, smoothed.sceneReset)
                 val token = slot.token
                 val startedNs = slot.startedNs
                 val recordable = slot.recordable
@@ -394,11 +432,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun startBenchmark() {
         if (!hasCameraPermission() || analysis==null || processingFailed) { binding.stats.text="请先启用摄像头并确认深度图正常更新。"; return }
+        if (bokehEnabled) { binding.stats.text="请先关闭景深模式再测速，测速只统计深度图链路。"; return }
         if (!benchmarkOpen.compareAndSet(false, true)) return
         measurementPending = true
         recordFrames = false
         measurementHint = ""
-        binding.resolution.isEnabled=false; binding.smoothing.isEnabled=false; binding.benchmark.isEnabled=false; binding.retry.isEnabled=false
+        binding.resolution.isEnabled=false; binding.smoothing.isEnabled=false; binding.bokeh.isEnabled=false; binding.benchmark.isEnabled=false; binding.retry.isEnabled=false
         binding.share.isEnabled=false
         onInference {
             try {
@@ -449,7 +488,7 @@ class MainActivity : AppCompatActivity() {
             measurementFiles = recorder.finish(complete, reason, engine)
             measurementHint = if (complete) "测试完成，可导出 CSV、JSON 与后端采样。" else "测试停止：$reason"
             runOnUiThread {
-                binding.resolution.isEnabled=true; binding.smoothing.isEnabled=true; binding.benchmark.isEnabled=engine!=null; binding.retry.isEnabled=true
+                binding.resolution.isEnabled=true; binding.smoothing.isEnabled=true; binding.bokeh.isEnabled=true; binding.benchmark.isEnabled=engine!=null; binding.retry.isEnabled=true
                 binding.share.isEnabled=true
                 binding.stats.text=if (complete) "5 分钟测试完成，点击导出测量获取 CSV、JSON 和后端采样。" else "测试停止：$reason，已记录部分结果。"
             }

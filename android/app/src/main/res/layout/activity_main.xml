@@ -8,11 +8,12 @@
     </FrameLayout>
     <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:layout_marginTop="6dp">
         <ImageView android:id="@+id/depth" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitCenter" android:background="#060B12" android:contentDescription="实时相对逆深度图" />
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="#99000000" android:padding="6dp" android:text="相对逆深度 · 红近 蓝远" android:textColor="#FFFFFF" />
+        <TextView android:id="@+id/depthLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="#99000000" android:padding="6dp" android:text="相对逆深度 · 红近 蓝远" android:textColor="#FFFFFF" />
     </FrameLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
         <Spinner android:id="@+id/resolution" android:layout_width="100dp" android:layout_height="48dp" android:backgroundTint="#35CDB2" />
         <androidx.appcompat.widget.SwitchCompat android:id="@+id/smoothing" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:checked="true" android:text="时序平滑" android:textColor="#FFFFFF" />
+        <androidx.appcompat.widget.SwitchCompat android:id="@+id/bokeh" android:layout_width="0dp" android:layout_height="48dp" android:layout_weight="1" android:checked="false" android:text="景深 Bokeh" android:textColor="#FFFFFF" />
         <Button android:id="@+id/retry" android:layout_width="wrap_content" android:layout_height="48dp" android:text="重试" />
     </LinearLayout>
     <TextView android:id="@+id/stats" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="等待摄像头" android:textColor="#35CDB2" android:textSize="13sp" />
